@@ -1,0 +1,8 @@
+{
+  "name": "PolisaSplit - Rozdzielacz Umów Ubezpieczeniowych PDF",
+  "description": "Automatyczny podział wielostronicowych plików PDF z umowami ubezpieczenia na osobne dokumenty nazwane numerami rejestracyjnymi pojazdów oraz pobieranie paczki ZIP.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PolisaSplit - Rozdzielacz Umów Ubezpieczeniowych PDF</title>
+    <meta name="description" content="Automatyczny podział wielostronicowych plików PDF z umowami ubezpieczenia na osobne dokumenty nazwane numerami rejestracyjnymi pojazdów oraz pobieranie paczki ZIP." />
+    <meta property="og:title" content="PolisaSplit - Rozdzielacz Umów Ubezpieczeniowych PDF" />
+    <meta property="og:description" content="Automatyczny podział wielostronicowych plików PDF z umowami ubezpieczenia na osobne dokumenty nazwane numerami rejestracyjnymi pojazdów oraz pobieranie paczki ZIP." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        try {
+          var _origFetch = window.fetch;
+          var _bound = _origFetch ? _origFetch.bind(window) : undefined;
+          var desc = {
+            get: function() {
+              return _bound;
+            },
+            set: function(val) {
+              _bound = val;
+            },
+            configurable: true,
+            enumerable: true
+          };
+          try {
+            Object.defineProperty(window, 'fetch', desc);
+          } catch (e1) {}
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            try {
+              Object.defineProperty(Window.prototype, 'fetch', desc);
+            } catch (e2) {}
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-slate-50 text-slate-900 min-h-screen font-sans antialiased selection:bg-blue-600 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
