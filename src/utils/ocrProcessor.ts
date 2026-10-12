@@ -4,46 +4,72 @@
 import { createWorker, Worker } from 'tesseract.js';
 import { analyzePageText, formatPlateDisplay, isValidPolishPlate } from './plateExtractor';
 
-let workerPromise: Promise<Worker> | null = null;
+let workerPromise: Promise<Worker | null> | null = null;
 
 /**
  * Inicjalizuje pojedynczą instancję Tesseract Worker dla wydajności (singleton)
+ * Wykorzystuje lokalnie zaserwowane skrypty workera/rdzenia WASM oraz posiada pełny fallback
  */
 export async function getOcrWorker(
   onProgress?: (progress: { status: string; progress: number }) => void
-): Promise<Worker> {
+): Promise<Worker | null> {
   if (!workerPromise) {
-    workerPromise = (async () => {
+    workerPromise = (async (): Promise<Worker | null> => {
+      const isBrowser = typeof window !== 'undefined';
+      const origin = isBrowser ? window.location.origin : '';
+      
+      const logHandler = (m: any) => {
+        if (onProgress && typeof m.progress === 'number') {
+          onProgress({
+            status: m.status || 'OCR',
+            progress: Math.min(Math.max(m.progress, 0), 1)
+          });
+        }
+      };
+
+      const errHandler = (err: any) => {
+        console.warn('Wewnętrzne ostrzeżenie Tesseract Worker:', err?.message || err);
+      };
+
+      // Próba 1: Uruchomienie z zasobami lokalnymi serwera (najszybsze i niezależne od zewnętrznych CDN)
       try {
-        // Używamy języka polskiego i angielskiego (angielski jest idealny dla znaków alfanumerycznych, tablic i VIN)
         const worker = await createWorker('pol+eng', 1, {
-          logger: (m) => {
-            if (onProgress && typeof m.progress === 'number') {
-              onProgress({
-                status: m.status || 'OCR',
-                progress: Math.min(Math.max(m.progress, 0), 1)
-              });
-            }
-          }
+          workerPath: isBrowser ? `${origin}/tesseract-worker/worker.min.js` : undefined,
+          corePath: isBrowser ? `${origin}/tesseract-core` : undefined,
+          logger: logHandler,
+          errorHandler: errHandler
         });
         return worker;
-      } catch (err) {
-        console.warn('Błąd inicjalizacji worker pol+eng, próba inicjalizacji z eng:', err);
-        // Fallback do czystego eng (mniejszy, szybszy, wystarcza dla tablic rejestracyjnych i VIN)
+      } catch (errLocal) {
+        console.warn('Próba uruchomienia lokalnego Tesseract Worker nie powiodła się, sprawdzam CDN:', errLocal);
+      }
+
+      // Próba 2: Uruchomienie ze standardowego CDN
+      try {
+        const worker = await createWorker('pol+eng', 1, {
+          logger: logHandler,
+          errorHandler: errHandler
+        });
+        return worker;
+      } catch (errCdn) {
+        console.warn('Próba pol+eng z CDN nie powiodła się, sprawdzam fallback eng:', errCdn);
+      }
+
+      // Próba 3: Fallback tylko eng (mniejszy model)
+      try {
         const worker = await createWorker('eng', 1, {
-          logger: (m) => {
-            if (onProgress && typeof m.progress === 'number') {
-              onProgress({
-                status: m.status || 'OCR',
-                progress: Math.min(Math.max(m.progress, 0), 1)
-              });
-            }
-          }
+          logger: logHandler,
+          errorHandler: errHandler
         });
         return worker;
+      } catch (finalErr) {
+        console.warn('Nie udało się zainicjalizować modułu OCR (np. brak połączenia sieciowego). Kontynuacja bez OCR:', finalErr);
+        workerPromise = null;
+        return null;
       }
     })();
   }
+
   return workerPromise;
 }
 
@@ -54,7 +80,9 @@ export async function terminateOcrWorker(): Promise<void> {
   if (workerPromise) {
     try {
       const worker = await workerPromise;
-      await worker.terminate();
+      if (worker) {
+        await worker.terminate();
+      }
     } catch (e) {
       console.warn('Błąd zamykania OCR worker:', e);
     } finally {
@@ -130,6 +158,15 @@ export async function performOcrOnCanvas(
     const worker = await getOcrWorker((p) => {
       if (onProgress) onProgress(p.progress);
     });
+
+    if (!worker) {
+      console.warn('OCR Worker nie jest dostępny - kontynuacja bez analizy OCR.');
+      return {
+        text: '',
+        detectedPlates: [],
+        suggestedPlates: []
+      };
+    }
 
     const ret = await worker.recognize(canvasOrDataUrl);
     const ocrText = ret.data.text || '';

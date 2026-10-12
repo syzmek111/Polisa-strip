@@ -4,12 +4,14 @@ import { ProcessingErrorDetails } from '../types/policy';
 
 interface DropzoneProps {
   onFileLoaded: (fileBytes: Uint8Array, filename: string) => void;
+  onStartReading?: (filename: string) => void;
   onError?: (details: ProcessingErrorDetails) => void;
   isProcessing: boolean;
 }
 
 export const Dropzone: React.FC<DropzoneProps> = ({
   onFileLoaded,
+  onStartReading,
   onError,
   isProcessing
 }) => {
@@ -23,6 +25,7 @@ export const Dropzone: React.FC<DropzoneProps> = ({
 
     // Weryfikacja pustego pliku
     if (file.size === 0) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
       onError?.({
         title: 'Pusty plik (0 bajtów)',
         reason: `Wybrany plik "${file.name}" ma rozmiar 0 B i nie zawiera żadnej treści ani stron.`,
@@ -36,6 +39,7 @@ export const Dropzone: React.FC<DropzoneProps> = ({
 
     // Weryfikacja rozszerzenia i typu MIME
     if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      if (fileInputRef.current) fileInputRef.current.value = '';
       const ext = file.name.split('.').pop() || 'nieznane';
       onError?.({
         title: 'Nieprawidłowy format pliku',
@@ -47,6 +51,9 @@ export const Dropzone: React.FC<DropzoneProps> = ({
       });
       return;
     }
+
+    // Natychmiast informujemy aplikację o rozpoczęciu wczytywania – eliminuje to jakiekolwiek miganie ekranu
+    onStartReading?.(file.name);
 
     try {
       const buffer = await file.arrayBuffer();
@@ -62,6 +69,10 @@ export const Dropzone: React.FC<DropzoneProps> = ({
         fileName: file.name,
         fileSize: file.size
       });
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 

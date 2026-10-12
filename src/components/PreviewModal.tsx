@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   X,
   Download,
@@ -16,23 +16,30 @@ import {
   Coins,
   Sparkles,
   Edit2,
-  Check
+  Check,
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+  Move
 } from 'lucide-react';
 import { PolicyContract } from '../types/policy';
 import { LicensePlateBadge } from './LicensePlateBadge';
 import { triggerFileDownload } from '../utils/pdfProcessor';
 import { pdfjsLib } from '../utils/pdfjsWrapper';
+import { maskVin, maskPersonName } from '../utils/security';
 
 interface PreviewModalProps {
   contract: PolicyContract | null;
   onClose: () => void;
   onUpdateRegistration?: (contractId: string, newPlate: string) => void;
+  screenPrivacyMode?: boolean;
 }
 
 export const PreviewModal: React.FC<PreviewModalProps> = ({
   contract,
   onClose,
-  onUpdateRegistration
+  onUpdateRegistration,
+  screenPrivacyMode
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -40,26 +47,63 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
   const [isLoadingDoc, setIsLoadingDoc] = useState(true);
   const [isEditingPlate, setIsEditingPlate] = useState(false);
   const [editPlateValue, setEditPlateValue] = useState('');
+  const [naturalPageSize, setNaturalPageSize] = useState<{ width: number; height: number } | null>(null);
+  const [canvasStyleSize, setCanvasStyleSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
+  // Stan przeciągania myszką (Pan & Drag)
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const renderTaskRef = useRef<any>(null);
   const pdfDocRef = useRef<any>(null);
 
-  // Obsługa klawisza Escape
+  // Obsługa klawiatury (Escape, strzałki stron, powiększenie +/-)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onClose();
+      } else if (e.key === 'ArrowLeft') {
+        setCurrentPage((p) => Math.max(1, p - 1));
+      } else if (e.key === 'ArrowRight') {
+        setCurrentPage((p) => Math.min(totalPages, p + 1));
+      } else if (e.key === '+' || e.key === '=') {
+        setScale((s) => Math.min(3.0, Number((s + 0.15).toFixed(2))));
+      } else if (e.key === '-') {
+        setScale((s) => Math.max(0.4, Number((s - 0.15).toFixed(2))));
+      } else if (e.key === '0') {
+        setScale(1.0);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [onClose, totalPages]);
 
-  // Ładowanie instancji dokumentu PDF za pomocą pdfjsLib (Canvas HTML5)
+  // Obsługa kółka myszy z Ctrl / Command lub gestu pinch do zoomowania
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.15 : -0.15;
+        setScale((s) => Math.min(3.0, Math.max(0.4, Number((s + delta).toFixed(2)))));
+      }
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, []);
+
+  // Ładowanie instancji dokumentu PDF za pomocą pdfjsLib
   useEffect(() => {
     let isCancelled = false;
     setCurrentPage(1);
     setIsLoadingDoc(true);
     setIsEditingPlate(false);
+    setScale(1.15);
 
     if (!contract || !contract.pdfBytes) {
       setIsLoadingDoc(false);
@@ -118,13 +162,23 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
+        // Zapamiętujemy naturalny rozmiar strony (dla dopasowywania do szerokości/okna)
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        setNaturalPageSize({ width: unscaledViewport.width, height: unscaledViewport.height });
+
         const dpr = window.devicePixelRatio || 1;
         const viewport = page.getViewport({ scale });
 
+        const displayWidth = Math.floor(viewport.width);
+        const displayHeight = Math.floor(viewport.height);
+
         canvas.width = Math.floor(viewport.width * dpr);
         canvas.height = Math.floor(viewport.height * dpr);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+        canvas.style.width = `${displayWidth}px`;
+        canvas.style.height = `${displayHeight}px`;
+
+        setCanvasStyleSize({ width: displayWidth, height: displayHeight });
 
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -155,6 +209,57 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
     };
   }, [currentPage, scale, isLoadingDoc]);
 
+  // Obsługa przeciągania myszą (Pan & Drag przy powiększeniu)
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0 || !scrollContainerRef.current) return;
+    setIsDragging(true);
+    setDragStart({
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: scrollContainerRef.current.scrollLeft,
+      scrollTop: scrollContainerRef.current.scrollTop
+    });
+  }, []);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging || !scrollContainerRef.current) return;
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+    scrollContainerRef.current.scrollLeft = dragStart.scrollLeft - dx;
+    scrollContainerRef.current.scrollTop = dragStart.scrollTop - dy;
+  }, [isDragging, dragStart]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  // Dopasowanie do szerokości okna
+  const handleFitWidth = () => {
+    if (!scrollContainerRef.current || !naturalPageSize) return;
+    const availableWidth = scrollContainerRef.current.clientWidth - 64;
+    if (availableWidth > 0 && naturalPageSize.width > 0) {
+      const calculatedScale = Math.max(0.4, Math.min(3.0, availableWidth / naturalPageSize.width));
+      setScale(Number(calculatedScale.toFixed(2)));
+    }
+  };
+
+  // Dopasowanie do całej strony (Fit to view)
+  const handleFitPage = () => {
+    if (!scrollContainerRef.current || !naturalPageSize) return;
+    const availableWidth = scrollContainerRef.current.clientWidth - 64;
+    const availableHeight = scrollContainerRef.current.clientHeight - 64;
+    if (availableWidth > 0 && availableHeight > 0 && naturalPageSize.width > 0 && naturalPageSize.height > 0) {
+      const scaleW = availableWidth / naturalPageSize.width;
+      const scaleH = availableHeight / naturalPageSize.height;
+      const calculatedScale = Math.max(0.4, Math.min(3.0, Math.min(scaleW, scaleH)));
+      setScale(Number(calculatedScale.toFixed(2)));
+    }
+  };
+
+  const handleResetZoom = () => {
+    setScale(1.0);
+  };
+
   if (!contract) return null;
 
   const handleSavePlate = () => {
@@ -165,15 +270,15 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/60 backdrop-blur-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-slate-950/80 backdrop-blur-xs">
       <div className="fixed inset-0" onClick={onClose} aria-hidden="true" />
 
-      <div className="relative bg-white rounded-2xl shadow-2xl max-w-5xl w-full h-[92vh] flex flex-col overflow-hidden z-10 border border-slate-200">
+      <div className="relative bg-white rounded-2xl shadow-2xl max-w-6xl w-full h-[94vh] flex flex-col overflow-hidden z-10 border border-slate-300">
         {/* Pasek nagłówka */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 bg-slate-50">
+        <div className="px-4 sm:px-6 py-3.5 border-b border-slate-200 flex items-center justify-between gap-3 bg-slate-50 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             {isEditingPlate ? (
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 shrink-0">
                 <input
                   type="text"
                   value={editPlateValue}
@@ -189,14 +294,14 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                 <button
                   type="button"
                   onClick={handleSavePlate}
-                  className="p-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer"
+                  className="p-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer shadow-xs"
                   title="Zapisz numer"
                 >
                   <Check className="w-4 h-4" />
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <LicensePlateBadge plateNumber={contract.registrationNumber} size="md" />
                 {onUpdateRegistration && (
                   <button
@@ -216,7 +321,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
 
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-slate-900 truncate">
+                <h3 className="text-sm sm:text-base font-bold text-slate-900 truncate">
                   {contract.customFilename}
                 </h3>
                 {contract.plateSource === 'ocr' && (
@@ -225,34 +330,66 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                     OCR
                   </span>
                 )}
+                {contract.hasInformationClause && (
+                  <span className="hidden md:inline-flex text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 items-center gap-1">
+                    Klauzula RODO
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-slate-500">
-                Strony w pliku źródłowym: {contract.pageIndices.map((p) => p + 1).join(', ')} ({contract.pageCount} str.)
+              <p className="text-xs text-slate-500 truncate">
+                Strony w pliku źródłowym: {contract.pageIndices.map((p) => p + 1).join(', ')} ({contract.pageCount} {contract.pageCount === 1 ? 'strona' : contract.pageCount < 5 ? 'strony' : 'stron'})
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Przyciski powiększenia / pomniejszenia */}
-            <div className="hidden sm:flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5 mr-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Zaawansowane narzędzia lupy / powiększenia */}
+            <div className="flex items-center gap-0.5 sm:gap-1 bg-white border border-slate-200 rounded-lg p-0.5 shadow-2xs">
               <button
                 type="button"
-                onClick={() => setScale((s) => Math.max(0.6, s - 0.15))}
-                className="p-1.5 text-slate-500 hover:text-slate-800 rounded transition-colors cursor-pointer"
-                title="Pomniejsz"
+                onClick={() => setScale((s) => Math.max(0.4, Number((s - 0.15).toFixed(2))))}
+                className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                title="Pomniejsz (-)"
               >
                 <ZoomOut className="w-3.5 h-3.5" />
               </button>
-              <span className="text-[11px] font-mono px-1 tabular-nums text-slate-600">
-                {Math.round(scale * 100)}%
-              </span>
+
               <button
                 type="button"
-                onClick={() => setScale((s) => Math.min(2.5, s + 0.15))}
-                className="p-1.5 text-slate-500 hover:text-slate-800 rounded transition-colors cursor-pointer"
-                title="Powiększ"
+                onClick={handleResetZoom}
+                className="text-[11px] font-mono px-1.5 py-0.5 tabular-nums text-slate-700 hover:text-blue-600 hover:bg-blue-50 rounded cursor-pointer font-bold"
+                title="Kliknij, aby zresetować do 100% (klawisz 0)"
+              >
+                {Math.round(scale * 100)}%
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setScale((s) => Math.min(3.0, Number((s + 0.15).toFixed(2))))}
+                className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                title="Powiększ (+)"
               >
                 <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+
+              <span className="w-px h-4 bg-slate-200 mx-0.5" />
+
+              <button
+                type="button"
+                onClick={handleFitWidth}
+                className="hidden md:inline-flex p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                title="Dopasuj do szerokości okna"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleFitPage}
+                className="hidden md:inline-flex p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                title="Dopasuj do całej strony"
+              >
+                <Minimize2 className="w-3.5 h-3.5" />
               </button>
             </div>
 
@@ -264,17 +401,19 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
                   triggerFileDownload(contract.pdfBlob, contract.customFilename);
                 }
               }}
-              className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1.5"
+              className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1.5 shadow-2xs"
+              title="Pobierz ten plik PDF na dysk"
             >
               <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Pobierz ten plik</span>
+              <span className="hidden sm:inline">Pobierz PDF</span>
             </button>
 
             {/* Zamknij */}
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer ml-1"
+              title="Zamknij (Esc)"
             >
               <X className="w-5 h-5" />
             </button>
@@ -282,7 +421,7 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
         </div>
 
         {/* Pasek szczegółowych parametrów umowy dla całkowitej pewności */}
-        <div className="bg-slate-100/80 px-6 py-2.5 border-b border-slate-200 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+        <div className="bg-slate-100/90 px-6 py-2 border-b border-slate-200 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs shrink-0">
           {contract.insurerName && (
             <div className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
               <Building className="w-3.5 h-3.5 text-slate-400" />
@@ -298,9 +437,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           )}
 
           {contract.vin && (
-            <div className="inline-flex items-center gap-1.5 text-slate-800 font-mono font-bold bg-white px-2 py-0.5 rounded border border-slate-200">
+            <div className="inline-flex items-center gap-1.5 text-slate-800 font-mono font-bold bg-white px-2 py-0.5 rounded border border-slate-200 shadow-2xs">
               <ShieldAlert className="w-3.5 h-3.5 text-slate-400" />
-              <span>VIN: {contract.vin}</span>
+              <span>VIN: {screenPrivacyMode ? maskVin(contract.vin) : contract.vin}</span>
             </div>
           )}
 
@@ -317,7 +456,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           {contract.policyHolder && (
             <div className="inline-flex items-center gap-1.5 text-slate-700">
               <User className="w-3.5 h-3.5 text-slate-400" />
-              <span className="truncate max-w-xs">{contract.policyHolder}</span>
+              <span className="truncate max-w-xs">
+                {screenPrivacyMode ? maskPersonName(contract.policyHolder) : contract.policyHolder}
+              </span>
             </div>
           )}
 
@@ -336,26 +477,63 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
           )}
         </div>
 
-        {/* Obszar podglądu Canvas */}
-        <div className="flex-1 bg-slate-200/70 overflow-auto p-4 sm:p-8 flex items-center justify-center relative">
+        {/* 
+          Obszar podglądu Canvas z nieograniczonym przesuwaniem (Pan & Drag)
+          i pełną widocznością każdego fragmentu dokumentu po przybliżeniu.
+        */}
+        <div
+          ref={scrollContainerRef}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          className={`flex-1 bg-slate-900/90 overflow-auto relative select-none ${
+            isDragging ? 'cursor-grabbing' : scale > 1 ? 'cursor-grab' : 'cursor-default'
+          }`}
+          style={{ overscrollBehavior: 'contain' }}
+        >
           {isLoadingDoc && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-100/80 gap-3 z-10">
-              <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-              <span className="text-sm font-medium text-slate-600">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/70 backdrop-blur-xs gap-3 z-20 text-white">
+              <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
+              <span className="text-sm font-medium text-slate-200">
                 Renderowanie stron dokumentu...
               </span>
             </div>
           )}
 
-          <div className="bg-white shadow-xl rounded-sm border border-slate-300 max-w-full overflow-hidden transition-all duration-150 flex items-center justify-center">
-            <canvas ref={canvasRef} className="block max-w-full h-auto" />
+          {/* 
+            Gwarancja pełnej widoczności dokumentu po przybliżeniu (Zero Cutoff):
+            Użycie 'm-auto' na karcie wewnątrz kontenera flex (bez items-center justify-center)
+            zapewnia idealne wyśrodkowanie, gdy strona mieści się w oknie, oraz
+            płynne wyrównanie do (0,0) przy powiększeniu, co eliminuje ujemne współrzędne flexboxa
+            i pozwala przewinąć oraz przeciągnąć każdy zakątek dokumentu bez ucinania krawędzi.
+          */}
+          <div className="min-w-full min-h-full p-8 sm:p-14 flex">
+            <div
+              className="m-auto bg-white shadow-2xl rounded-sm border border-slate-700/50 shrink-0 transition-shadow duration-150"
+              style={{
+                width: canvasStyleSize.width ? `${canvasStyleSize.width}px` : 'auto',
+                height: canvasStyleSize.height ? `${canvasStyleSize.height}px` : 'auto',
+              }}
+            >
+              <canvas
+                ref={canvasRef}
+                className="block pointer-events-none"
+              />
+            </div>
           </div>
         </div>
 
-        {/* Pasek nawigacji stron */}
-        <div className="px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-between">
-          <div className="text-xs text-slate-500 font-mono">
-            Strona {currentPage} z {totalPages} w tej umowie
+        {/* Pasek nawigacji stron i pomocniczych wskazówek */}
+        <div className="px-6 py-3 border-t border-slate-200 bg-white flex items-center justify-between shrink-0">
+          <div className="text-xs text-slate-500 font-mono flex items-center gap-2">
+            <span>Strona {currentPage} z {totalPages} w tej umowie</span>
+            {scale > 1.2 && (
+              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                <Move className="w-3 h-3" />
+                Możesz przeciągać dokument myszką
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -363,7 +541,8 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               type="button"
               disabled={currentPage <= 1}
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors shadow-2xs"
+              title="Poprzednia strona (Strzałka w lewo)"
             >
               <ChevronLeft className="w-4 h-4 text-slate-700" />
             </button>
@@ -376,14 +555,17 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({
               type="button"
               disabled={currentPage >= totalPages}
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors shadow-2xs"
+              title="Następna strona (Strzałka w prawo)"
             >
               <ChevronRight className="w-4 h-4 text-slate-700" />
             </button>
           </div>
 
-          <div className="text-xs text-slate-400 hidden sm:block">
-            Użyj kółka myszy lub przycisków lupy, aby powiększyć detale dokumentu
+          <div className="text-xs text-slate-400 hidden lg:flex items-center gap-3">
+            <span>Skróty: Ctrl + kółko myszy = lupa</span>
+            <span>·</span>
+            <span>Przeciągaj myszką, aby przesuwać</span>
           </div>
         </div>
       </div>

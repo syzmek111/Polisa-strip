@@ -11,6 +11,44 @@
     <meta name="twitter:card" content="summary_large_image" />
     <script>
       (function() {
+        // Ignorowanie błędów Vite HMR WebSocket zgodnie z wytycznymi środowiska AI Studio
+        window.addEventListener('unhandledrejection', function(event) {
+          try {
+            var reason = event && event.reason;
+            var msg = reason ? (reason.message || String(reason)) : '';
+            var stack = (reason && reason.stack) ? String(reason.stack) : '';
+            if (
+              msg.indexOf('WebSocket') !== -1 ||
+              stack.indexOf('@vite/client') !== -1 ||
+              stack.indexOf('client.mjs') !== -1 ||
+              msg.indexOf('worker.min.js') !== -1 ||
+              msg.indexOf('tesseract') !== -1
+            ) {
+              event.preventDefault();
+              if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+              return true;
+            }
+          } catch (e) {}
+        });
+        window.addEventListener('error', function(event) {
+          try {
+            var msg = event && event.message ? String(event.message) : '';
+            var filename = event && event.filename ? String(event.filename) : '';
+            if (
+              msg.indexOf('WebSocket') !== -1 ||
+              filename.indexOf('@vite/client') !== -1 ||
+              filename.indexOf('client.mjs') !== -1 ||
+              msg.indexOf('worker.min.js') !== -1 ||
+              filename.indexOf('worker.min.js') !== -1 ||
+              msg.indexOf('tesseract') !== -1
+            ) {
+              event.preventDefault();
+              if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+              return true;
+            }
+          } catch (e) {}
+        });
+
         try {
           var _origFetch = window.fetch;
           var _bound = _origFetch ? _origFetch.bind(window) : undefined;

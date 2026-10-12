@@ -22,6 +22,11 @@ export interface PageAnalysis {
   isOcrUsed?: boolean;
   ocrText?: string;
   suggestedPlates?: string[];
+  pageOfDoc?: { current: number; total: number };
+  isClauseOrTermsPage?: boolean;
+  clauseTitle?: string;
+  isContinuationPage?: boolean;
+  isStrongPolicyStart?: boolean;
 }
 
 export interface PolicyContract {
@@ -49,6 +54,7 @@ export interface PolicyContract {
   plateSource?: 'text' | 'ocr' | 'annotation' | 'manual';
   isNonTextOrScanned?: boolean;
   suggestedPlates?: string[];
+  hasInformationClause?: boolean;
 }
 
 export type ProcessingErrorCategory =

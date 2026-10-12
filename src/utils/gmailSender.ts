@@ -2,6 +2,7 @@
 // oraz wysyłki przez oficjalne Gmail REST API v1 z dołączaniem wygenerowanych plików PDF jako załączników.
 
 import { PolicyContract } from '../types/policy';
+import { addRodoAuditLog } from './security';
 
 /**
  * Dzieli ciąg Base64 na linie o maksymalnej długości (standard RFC 2045 i RFC 5321 to 76 znaków).
@@ -64,6 +65,7 @@ export interface SendEmailOptions {
   senderName?: string;
   recipientEmail: string; // Może zawierać jeden lub wiele adresów oddzielonych przecinkami
   ccEmail?: string;       // Opcjonalna kopia DW (np. do samego siebie)
+  replyTo?: string;       // Opcjonalny adres do odpowiedzi (Reply-To)
   subject: string;
   messageBody: string;
   contracts: PolicyContract[];
@@ -87,6 +89,7 @@ export function buildMimeMessage({
   senderName,
   recipientEmail,
   ccEmail,
+  replyTo,
   subject,
   messageBody,
   contracts
@@ -128,6 +131,10 @@ export function buildMimeMessage({
 
   if (ccEmail && ccEmail.trim() && ccEmail.includes('@')) {
     headers.push(`Cc: ${ccEmail.trim()}`);
+  }
+
+  if (replyTo && replyTo.trim() && replyTo.includes('@')) {
+    headers.push(`Reply-To: ${replyTo.trim()}`);
   }
 
   headers.push(`Subject: ${encodedSubject}`);
@@ -245,6 +252,19 @@ export async function sendEmailWithPdfAttachments(options: SendEmailOptions): Pr
     }
 
     const data = await response.json();
+
+    // Rejestracja wysyłki w Rejestrze Audytowym RODO
+    try {
+      addRodoAuditLog({
+        action: 'EMAIL_SENT',
+        title: 'Wysłano e-mail z załącznikami PDF (Gmail API)',
+        description: `Wysłano ${contracts.length} polis na adres ${recipientEmail}`,
+        userOrSender: options.senderEmail,
+        recipient: recipientEmail,
+        itemCount: contracts.length,
+      });
+    } catch (e) {}
+
     return {
       success: true,
       messageId: data.id,

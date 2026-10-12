@@ -45,14 +45,27 @@ export const InfoModal: React.FC<InfoModalProps> = ({ type, onClose }) => {
                 </p>
               </div>
 
+              <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+                <div className="font-semibold text-emerald-950 mb-1 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  Inteligentny kontekst 2-stronicowych polis (Klauzula informacyjna / RODO)
+                </div>
+                <p className="text-xs text-emerald-800">
+                  Większość polskich polis ubezpieczeniowych (PZU, Warta, Ergo Hestia, Generali itp.) składa się z 2 stron,
+                  z czego 2. strona stanowi klauzulę informacyjną o przetwarzaniu danych osobowych (RODO), pouczenia lub oświadczenia
+                  (często bez powtórzonego numeru rejestracyjnego). Zaawansowany silnik analizy tekstu wykrywa kontekst klauzuli,
+                  nagłówki RODO oraz numerację (&quot;Strona 1 z 2&quot; / &quot;2 z 2&quot;), gwarantując bezbłędne łączenie obu stron w jedną kompletną umowę.
+                </p>
+              </div>
+
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
                 <div className="font-semibold text-slate-900 mb-1 flex items-center gap-1.5">
                   <CheckCircle2 className="w-4 h-4 text-blue-600" />
-                  Wielostronicowe polisy
+                  Wielostronicowe polisy i załączniki
                 </div>
                 <p className="text-xs text-slate-500">
-                  Strony kontynuacji (np. załączniki, ogólne warunki, strona 2 z 2) są automatycznie
-                  dołączane do właściwej umowy.
+                  Wszelkie strony kontynuacji (załączniki flotowe, postanowienia szczególne, wyciągi z OWU)
+                  są automatycznie rozpoznawane i dołączane do właściwej umowy.
                 </p>
               </div>
 

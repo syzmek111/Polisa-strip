@@ -49,6 +49,136 @@ export interface ExtractedPageData {
   totalPremium?: string;
   issueDate?: string;
   confidence: 'high' | 'medium' | 'fallback';
+  pageOfDoc?: { current: number; total: number };
+  isClauseOrTermsPage: boolean;
+  clauseTitle?: string;
+  isContinuationPage: boolean;
+  isStrongPolicyStart: boolean;
+}
+
+/**
+ * Wykrywa numerację stron typu "Strona 1 z 2", "Strona 2/2", "1 z 2", "2/2", "Page 1 of 2"
+ */
+export function detectPageNumbering(text: string): { current: number; total: number } | undefined {
+  const norm = text.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ');
+
+  // 1. Wzorce formalne: "Strona 1 z 2", "Strona 2/2", "Str. 1 z 2", "Page 1 of 2"
+  const m1 = norm.match(/\b(?:strona|str\.|page)\s*([1-9]\d*)\s*(?:z|\/|of)\s*([1-9]\d*)\b/i);
+  if (m1) {
+    const cur = parseInt(m1[1], 10);
+    const tot = parseInt(m1[2], 10);
+    if (cur <= tot && tot <= 25) {
+      return { current: cur, total: tot };
+    }
+  }
+
+  // 2. Wzorzec "1 z 2", "2 z 2", "1 z 2 stron"
+  const m2 = norm.match(/\b([1-9]\d*)\s*(?:z|of)\s*([1-9]\d*)\s*(?:stron|pages)?\b/i);
+  if (m2) {
+    const cur = parseInt(m2[1], 10);
+    const tot = parseInt(m2[2], 10);
+    if (cur <= tot && tot <= 25) {
+      return { current: cur, total: tot };
+    }
+  }
+
+  // 3. Wzorzec ułamkowy w stopce lub nagłówku: "1/2" lub "2/2"
+  const m3 = norm.match(/\b([1-9])\s*\/\s*([1-9])\b/);
+  if (m3) {
+    const cur = parseInt(m3[1], 10);
+    const tot = parseInt(m3[2], 10);
+    if (cur <= tot && tot <= 5) {
+      return { current: cur, total: tot };
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Inteligentne wykrywanie klauzuli informacyjnej / RODO / pouczeń / oświadczeń ubezpieczającego
+ * (Najczęstsza druga strona polisy ubezpieczeniowej w polskich towarzystwach ubezpieczeń).
+ */
+export function detectInformationClause(text: string): { isClause: boolean; title?: string } {
+  const norm = text.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').toUpperCase();
+
+  // 1. Klauzule informacyjne o przetwarzaniu danych osobowych (RODO / GDPR)
+  if (
+    norm.includes('KLAUZULA INFORMACYJNA') ||
+    norm.includes('OBOWIĄZEK INFORMACYJNY') ||
+    norm.includes('OBOWIAZEK INFORMACYJNY') ||
+    norm.includes('INFORMACJA ADMINISTRATORA DANYCH') ||
+    norm.includes('ADMINISTRATOR DANYCH OSOBOWYCH') ||
+    norm.includes('PRZETWARZANIU DANYCH OSOBOWYCH') ||
+    norm.includes('PRZETWARZANIE DANYCH OSOBOWYCH') ||
+    norm.includes('OCHRONA DANYCH OSOBOWYCH (RODO)') ||
+    norm.includes('ZASADY PRZETWARZANIA DANYCH') ||
+    norm.includes('OCHRONIE DANYCH OSOBOWYCH') ||
+    /\bART\.\s*13\s+RODO\b/i.test(norm) ||
+    /\bART\.\s*14\s+RODO\b/i.test(norm) ||
+    /\bROZPORZ[AĄ]DZENI[EU]\s+(?:UE\s+)?2016\/679\b/i.test(norm)
+  ) {
+    return { isClause: true, title: 'Klauzula informacyjna RODO' };
+  }
+
+  // 2. Pouczenia o prawie do odstąpienia, tryb reklamacji, UFG
+  if (
+    norm.includes('POUCZENIE O PRAWIE DO ODSTĄPIENIA') ||
+    norm.includes('POUCZENIE O PRAWIE DO ODSTAPIENIA') ||
+    norm.includes('OŚWIADCZENIA UBEZPIECZAJĄCEGO') ||
+    norm.includes('OSWIADCZENIA UBEZPIECZAJACEGO') ||
+    norm.includes('TRYB SKŁADANIA REKLAMACJI') ||
+    norm.includes('TRYB SKLADANIA REKLAMACJI') ||
+    norm.includes('INFORMACJA O TRYBIE SKŁADANIA REKLAMACJI') ||
+    norm.includes('INFORMACJA DLA KLIENTA') ||
+    norm.includes('INFORMACJA O DYSTRYBUTORZE UBEZPIECZEŃ') ||
+    norm.includes('UBEZPIECZENIOWY FUNDUSZ GWARANCYJNY')
+  ) {
+    return { isClause: true, title: 'Pouczenia i oświadczenia ubezpieczającego' };
+  }
+
+  // 3. Ogólne warunki OWU / Załączniki / Postanowienia dodatkowe jako strona 2
+  if (
+    norm.includes('OGÓLNE WARUNKI UBEZPIECZENIA') ||
+    norm.includes('OGOLNE WARUNKI UBEZPIECZENIA') ||
+    norm.includes('WYCIĄG Z OGÓLNYCH WARUNKÓW') ||
+    norm.includes('WYCIAG Z OGOLNYCH WARUNKOW') ||
+    norm.includes('POSTANOWIENIA DODATKOWE I ODMIENNE') ||
+    norm.includes('KARTA PRODUKTU') ||
+    norm.includes('DOKUMENT ZAWIERAJĄCY INFORMACJE O PRODUKCIE')
+  ) {
+    return { isClause: true, title: 'Warunki i postanowienia dodatkowe (OWU)' };
+  }
+
+  // 4. Analiza gęstości słów kluczowych klauzuli prawnej
+  let legalScore = 0;
+  if (/ADMINISTRATOR/i.test(norm)) legalScore++;
+  if (/DANYCH\s+OSOBOWYCH/i.test(norm)) legalScore++;
+  if (/PRZETWARZANI/i.test(norm)) legalScore++;
+  if (/INSPEKTOR/i.test(norm)) legalScore++;
+  if (/SKARG/i.test(norm)) legalScore++;
+  if (/UODO|ORGANU\s+NADZORCZEGO/i.test(norm)) legalScore++;
+  if (/ODBIORC/i.test(norm)) legalScore++;
+  if (/OKRES\s+PRZECHOWYWANIA/i.test(norm)) legalScore++;
+  if (/POUCZENI/i.test(norm)) legalScore++;
+  if (/ODST[AĄ]PIENI/i.test(norm)) legalScore++;
+  if (/REKLAMACJ/i.test(norm)) legalScore++;
+
+  if (legalScore >= 4) {
+    return { isClause: true, title: 'Klauzula prawno-informacyjna' };
+  }
+
+  return { isClause: false };
+}
+
+/**
+ * Wykrywa czy strona jest jednoznaczną kontynuacją (np. Strona 2, Ciąg dalszy, Załącznik)
+ */
+export function detectContinuationIndicators(text: string): boolean {
+  const norm = text.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').toUpperCase();
+  if (/\b(?:STRONA|STR\.|PAGE)\s+[2-9]\b/i.test(norm)) return true;
+  if (/\b(?:CI[AĄ]G\s+DALSZY|KONTYNUACJA|CZ[EĘ][SŚ][CĆ]\s+II|ZA[LŁ][AĄ]CZNIK\s+NR)\b/i.test(norm)) return true;
+  return false;
 }
 
 export function cleanText(raw: string): string {
@@ -133,7 +263,11 @@ export function analyzePageText(text: string): ExtractedPageData {
     }
   }
 
-  // 2. Wykrywanie nagłówka umowy ubezpieczeniowej
+  const pageOfDoc = detectPageNumbering(text);
+  const clauseInfo = detectInformationClause(text);
+  const isContinuationPage = detectContinuationIndicators(text) || (pageOfDoc ? pageOfDoc.current > 1 : false);
+
+  // 2. Wykrywanie nagłówka umowy ubezpieczeniowej (wyłącznie gdy nie jest to klauzula informacyjna)
   const headerPatterns = [
     /\b(CERTYFIKAT\s+POLISY(?:\s+NR)?|CERTYFIKAT\s+UBEZPIECZENIA|CERTYFIKAT\s+OC|CERTYFIKAT\s+KOMUNIKACYJNY)\b/i,
     /\b(POLISA\s+UBEZPIECZENIOWA|POLISA\s+UBEZPIECZENIA|POLISA\s+KOMUNIKACYJNA|POLISA\s+NR|POLISA\s+SERIA)\b/i,
@@ -143,17 +277,24 @@ export function analyzePageText(text: string): ExtractedPageData {
 
   let hasHeader = false;
   let headerSnippet: string | undefined;
-  for (const pat of headerPatterns) {
-    const match = norm.match(pat);
-    if (match) {
-      hasHeader = true;
-      headerSnippet = match[0].toUpperCase();
-      break;
+
+  // Nagłówek polisy liczy się jako nagłówek nowej umowy TYLKO jeśli strona NIE JEST klauzulą informacyjną
+  if (!clauseInfo.isClause) {
+    for (const pat of headerPatterns) {
+      const match = norm.match(pat);
+      if (match) {
+        hasHeader = true;
+        headerSnippet = match[0].toUpperCase();
+        break;
+      }
     }
   }
 
-  const firstPagePattern = /\b(STRONA\s+1\s*(?:Z|\/)\s*[0-9]+|STR\.\s*1\s*(?:Z|\/)\s*[0-9]+|1\s+Z\s+[0-9]+\s+STRON)\b/i;
-  const isFirstPage = hasHeader || firstPagePattern.test(norm);
+  // Pierwsza strona polisy:
+  // Wyraźne "Strona 1 z X" LUB (nagłówek polisy bez cech kontynuacji i bez cech klauzuli)
+  const isFirstPage =
+    (pageOfDoc !== undefined && pageOfDoc.current === 1) ||
+    (!isContinuationPage && !clauseInfo.isClause && hasHeader);
 
   // 3. Wykrywanie numeru polisy
   let policyNumber: string | undefined;
@@ -305,6 +446,22 @@ export function analyzePageText(text: string): ExtractedPageData {
     confidence = 'medium';
   }
 
+  const hasCorePolicyAttributes = Boolean(
+    bestPlate ||
+    vin ||
+    vehicleModel ||
+    policyNumber ||
+    insurancePeriod ||
+    totalPremium
+  );
+
+  const isStrongPolicyStart =
+    !clauseInfo.isClause &&
+    !isContinuationPage &&
+    (pageOfDoc ? pageOfDoc.current === 1 : true) &&
+    (hasHeader || Boolean(bestPlate)) &&
+    hasCorePolicyAttributes;
+
   return {
     plates: allDetected,
     bestPlate,
@@ -321,6 +478,11 @@ export function analyzePageText(text: string): ExtractedPageData {
     coverageTypes: coverageTypes.length > 0 ? coverageTypes : undefined,
     totalPremium,
     issueDate,
-    confidence
+    confidence,
+    pageOfDoc,
+    isClauseOrTermsPage: clauseInfo.isClause,
+    clauseTitle: clauseInfo.title,
+    isContinuationPage,
+    isStrongPolicyStart
   };
 }

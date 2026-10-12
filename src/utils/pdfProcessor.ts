@@ -362,7 +362,12 @@ export async function processPdfDocument(
       plateSource,
       isOcrUsed,
       ocrText,
-      suggestedPlates
+      suggestedPlates,
+      pageOfDoc: analysis.pageOfDoc,
+      isClauseOrTermsPage: analysis.isClauseOrTermsPage,
+      clauseTitle: analysis.clauseTitle,
+      isContinuationPage: analysis.isContinuationPage,
+      isStrongPolicyStart: analysis.isStrongPolicyStart
     });
 
     onProgress?.({
@@ -410,6 +415,8 @@ export async function processPdfDocument(
     totalPremium?: string;
     issueDate?: string;
     pageIndices: number[];
+    expectedPageCount?: number;
+    hasInformationClause?: boolean;
     confidence: 'high' | 'medium' | 'fallback';
     plateSource?: 'text' | 'ocr' | 'annotation' | 'manual';
     isNonTextOrScanned?: boolean;
@@ -425,21 +432,122 @@ export async function processPdfDocument(
 
     let shouldStartNewContract = false;
 
-    if (isVeryFirstPage) {
+    if (isVeryFirstPage || !currentDraft) {
       shouldStartNewContract = true;
-    } else if (page.bestPlate && currentDraft?.registrationNumber && page.bestPlate !== currentDraft.registrationNumber) {
-      // Wyraźna zmiana numeru rejestracyjnego pomiędzy stronami -> nowa umowa
-      shouldStartNewContract = true;
-    } else if (page.vin && currentDraft?.vin && page.vin !== currentDraft.vin) {
-      // Wyraźna zmiana numeru VIN -> nowa umowa
-      shouldStartNewContract = true;
-    } else if (page.policyNumber && currentDraft?.policyNumber && page.policyNumber !== currentDraft.policyNumber) {
-      // Zmiana numeru polisy -> nowa umowa
-      shouldStartNewContract = true;
-    } else if (page.hasHeader && page.isFirstPageOfPolicy && !page.bestPlate && currentDraft?.registrationNumber) {
-      // Wyraźny nowy nagłówek bez numeru rejestracyjnego, gdy strona nie jest kontynuacją (strona 2/3)
-      if (!/\b(strona\s+[2-9]|str\.\s*[2-9])/i.test(page.text)) {
+    } else {
+      // INTELIGENTNA ANALIZA KONTEKSTU WIELOSTRONICOWOŚCI (2 STRONY: POLISA + KLAUZULA INFORMACYJNA)
+      const hasDifferentPlate = Boolean(
+        page.bestPlate &&
+        currentDraft.registrationNumber &&
+        page.bestPlate !== currentDraft.registrationNumber
+      );
+
+      const hasSamePlate = Boolean(
+        page.bestPlate &&
+        currentDraft.registrationNumber &&
+        page.bestPlate === currentDraft.registrationNumber
+      );
+
+      const hasDifferentVin = Boolean(
+        page.vin &&
+        currentDraft.vin &&
+        page.vin !== currentDraft.vin
+      );
+
+      const hasSameVin = Boolean(
+        page.vin &&
+        currentDraft.vin &&
+        page.vin === currentDraft.vin
+      );
+
+      const hasDifferentPolicyNum = Boolean(
+        page.policyNumber &&
+        currentDraft.policyNumber &&
+        page.policyNumber !== currentDraft.policyNumber
+      );
+
+      const hasSamePolicyNum = Boolean(
+        page.policyNumber &&
+        currentDraft.policyNumber &&
+        page.policyNumber === currentDraft.policyNumber
+      );
+
+      // Oznaczenie numeru strony z dokumentu (np. "Strona 1 z 2", "Strona 2 z 2", "2/2")
+      const isExplicitContinuationPage = Boolean(
+        page.pageOfDoc && page.pageOfDoc.current > 1
+      );
+
+      const isExplicitFirstPage = Boolean(
+        page.pageOfDoc && page.pageOfDoc.current === 1
+      );
+
+      // Czy strona została zidentyfikowana jako klauzula informacyjna / RODO / pouczenia / OWU
+      const isInformationClause = Boolean(page.isClauseOrTermsPage);
+
+      // Stan aktualnie budowanej umowy
+      const expectedTotal = currentDraft.expectedPageCount;
+      const pagesInCurrentContract = currentDraft.pageIndices.length;
+      const isWaitingForSecondPage = Boolean(expectedTotal && pagesInCurrentContract < expectedTotal);
+      const isExpectedTotalReached = Boolean(expectedTotal && pagesInCurrentContract >= expectedTotal);
+
+      // --- ZAAWANSOWANE REGUŁY DECYZYJNE ---
+
+      // REGUŁA 1: Klauzula informacyjna (RODO / Administrator / Pouczenie / Oświadczenia)
+      // Jeśli strona to klauzula informacyjna:
+      // Z definicji stanowi ona 2. stronę (lub załącznik) bieżącej umowy ubezpieczeniowej!
+      // Dołączamy ją do aktualnej umowy, chyba że strona zawiera wyraźnie inny numer rejestracyjny I jest oznaczona jako strona 1.
+      if (isInformationClause && (!hasDifferentPlate || !isExplicitFirstPage)) {
+        shouldStartNewContract = false;
+        currentDraft.hasInformationClause = true;
+      }
+      // REGUŁA 2: Wyraźna numeracja kontynuacji (np. "Strona 2 z 2", "2/2", "Ciąg dalszy")
+      else if (isExplicitContinuationPage || page.isContinuationPage) {
+        // Kontynuacja aktualnej umowy
+        shouldStartNewContract = false;
+        if (isInformationClause) currentDraft.hasInformationClause = true;
+      }
+      // REGUŁA 3: Oczekiwanie na dopełnienie 2. strony (gdy strona 1 polisy miała "Strona 1 z 2")
+      else if (isWaitingForSecondPage && !hasDifferentPlate && !isExplicitFirstPage) {
+        shouldStartNewContract = false;
+        if (isInformationClause) currentDraft.hasInformationClause = true;
+      }
+      // REGUŁA 4: Identyczne kluczowe identyfikatory (ten sam numer polisy, ten sam VIN lub ten sam numer rej.)
+      else if ((hasSamePlate || hasSameVin || hasSamePolicyNum) && !isExplicitFirstPage) {
+        shouldStartNewContract = false;
+        if (isInformationClause) currentDraft.hasInformationClause = true;
+      }
+      // REGUŁA 5: Kontekst 2-stronicowej polisy bez numeru rejestracyjnego na stronie 2
+      // Gdy umowa ma 1 stronę, a strona [i] nie posiada numeru rej., ani VIN, ani nowej składki / okresu:
+      // Jest to bezsprzecznie strona 2 aktualnej umowy (warunki, podpis, blankiet, oświadczenia)!
+      else if (
+        pagesInCurrentContract === 1 &&
+        !page.bestPlate &&
+        !page.vin &&
+        !page.totalPremium &&
+        !isExplicitFirstPage
+      ) {
+        shouldStartNewContract = false;
+        if (isInformationClause) currentDraft.hasInformationClause = true;
+      }
+      // REGUŁA 6: Rozpoczęcie nowej umowy
+      // Nowa umowa rozpoczyna się gdy:
+      // a) Strona ma oznaczenie "Strona 1 z X" (np. Strona 1 z 2 dla kolejnego pojazdu)
+      // b) Zmienił się numer rejestracyjny pojazdu
+      // c) Zmienił się numer VIN pojazdu
+      // d) Poprzednia polisa osiągnęła zadeklarowaną liczbę stron (np. 2 z 2) i kolejna ma cechy polisy
+      // e) Strona to mocny początek nowej polisy (nagłówek polisy + parametry ubezpieczenia) i nie jest klauzulą
+      else if (
+        hasDifferentPlate ||
+        hasDifferentVin ||
+        isExplicitFirstPage ||
+        isExpectedTotalReached ||
+        (hasDifferentPolicyNum && (page.isStrongPolicyStart || Boolean(page.bestPlate))) ||
+        (page.isStrongPolicyStart && !isWaitingForSecondPage)
+      ) {
         shouldStartNewContract = true;
+      } else {
+        // Zabezpieczenie domyślne: jeśli strona nie wykazuje cech nowej umowy, nie dzielimy jej
+        shouldStartNewContract = false;
       }
     }
 
@@ -447,6 +555,9 @@ export async function processPdfDocument(
       if (currentDraft && currentDraft.pageIndices.length > 0) {
         drafts.push(currentDraft);
       }
+
+      // Jeśli strona 1 podaje łączną liczbę stron (np. "Strona 1 z 2"), rejestrujemy to w szkicu
+      const expectedPageCount = page.pageOfDoc ? page.pageOfDoc.total : undefined;
 
       currentDraft = {
         registrationNumber: page.bestPlate,
@@ -461,6 +572,8 @@ export async function processPdfDocument(
         totalPremium: page.totalPremium,
         issueDate: page.issueDate,
         pageIndices: [page.pageIndex],
+        expectedPageCount,
+        hasInformationClause: Boolean(page.isClauseOrTermsPage),
         confidence: page.bestPlate ? (page.plateSource === 'ocr' ? 'medium' : 'high') : 'fallback',
         plateSource: page.plateSource,
         isNonTextOrScanned: page.isOcrUsed || !page.bestPlate,
@@ -468,6 +581,9 @@ export async function processPdfDocument(
       };
     } else {
       currentDraft.pageIndices.push(page.pageIndex);
+      if (page.isClauseOrTermsPage) {
+        currentDraft.hasInformationClause = true;
+      }
 
       if (!currentDraft.registrationNumber && page.bestPlate) {
         currentDraft.registrationNumber = page.bestPlate;
@@ -596,6 +712,7 @@ export async function processPdfDocument(
       issueDate: draft.issueDate,
       pageIndices: draft.pageIndices,
       pageCount: draft.pageIndices.length,
+      hasInformationClause: draft.hasInformationClause || draft.pageIndices.length >= 2,
       pdfBytes: subPdfBytes,
       pdfBlob: subPdfBlob,
       previewUrl,
